@@ -263,11 +263,10 @@ class MicroRobotEnv:
         # 合成：先对齐，再自转（顺序很关键）
         q = quat_mul(q_spin, q_align)
 
-        p.resetBasePositionAndOrientation(
-            self.robot_id,
-            self.state.tolist(),
-            q.tolist()
-        )
+        r_LI = np.array([0.01067, -0.00298, -0.00001])  # 你的 inertial origin（米）
+        R = np.array(p.getMatrixFromQuaternion(q)).reshape(3,3)
+        pos_com = self.state + R @ r_LI
+        p.resetBasePositionAndOrientation(self.robot_id, pos_com.tolist(), q.tolist())
         p.stepSimulation()
         time.sleep(self.gui_dt)
 
