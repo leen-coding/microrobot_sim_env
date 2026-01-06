@@ -47,19 +47,19 @@ class MicroRobotEnv:
         self.B0 = self.B0_mT * 1e-3  # Tesla
 
         # Magnetic dipole moment magnitude (A·m^2).
-        # If unknown, treat as a tunable parameter / randomized parameter for robustness.
-        self.m_mag = 1e-9  # A·m^2 (placeholder; tune/identify from experiments)
+        # N52 r = 0.75, h = 2mm
+        self.m_mag = 4.08 * 1e-3  # A·m^2 (placeholder; tune/identify from experiments)
 
         # --- fluid + geometry (SI units) ---
-        self.eta = 1e-3        # Pa·s (water at room temp)
-        self.n_turns = 3.5       # number of helix turns, n
-        self.R_helix = 50e-6   # helix radius (meters)  (paper uses n0 or similar)
-        self.theta = np.deg2rad(35.0)  # pitch angle θ (radians)
-        self.lam = 200e-6      # helix pitch / wavelength λ (meters)
-        self.r_fil = 2e-6      # filament radius r (meters)
+        self.eta = 0.34        # Pa·s (water at room temp)
+        self.n_turns = 2       # number of helix turns, n
+        self.R_helix = 1 * 1e-3    # helix radius (meters)  (paper uses n0 or similar)
+        self.theta = np.deg2rad(60.9)  # pitch angle θ (radians)
+        self.lam = 3.5 * 1e-3      # helix pitch / wavelength λ (meters)
+        self.r_fil = 3 * 1e-4      # filament radius r (meters)
 
         # Head (spherical) diameter d (meters), for ψ_v and ψ_ω in the paper
-        self.d_head = 30e-6
+        self.d_head = 2.5 * 1e-3
 
         # Optional simple drift/noise (set to 0 for deterministic)
         self.drift = np.zeros(2)        # m/s
@@ -192,3 +192,33 @@ class MicroRobotEnv:
     def render(self):
         # Minimal placeholder; integrate with matplotlib if needed
         print(f"state(x,y) = {self.state}")
+
+
+import matplotlib.pyplot as plt
+
+def test_run():
+    env = MicroRobotEnv()
+    traj = []
+    
+    # 模拟一个圆周运动：改变方向，保持频率
+    f_test = 5.0  
+    for t in range(200):
+        angle = 0.05 * t
+        action = [np.cos(angle), np.sin(angle), f_test]
+        state, info = env.step(action)
+        traj.append(state.copy())
+    
+    traj = np.array(traj)
+    
+    # 绘图
+    plt.figure(figsize=(8, 6))
+    plt.plot(traj[:, 0] * 1000, traj[:, 1] * 1000, 'b-o', label='Trajectory')
+    plt.xlabel('X (mm)')
+    plt.ylabel('Y (mm)')
+    plt.title(f'Microrobot Simulation (f={f_test}Hz, Step-out={info["f_step"]:.1f}Hz)')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+if __name__ == "__main__":
+    test_run()
