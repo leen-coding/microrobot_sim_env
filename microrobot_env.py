@@ -31,10 +31,18 @@ Dynamics:
 """
 
 import numpy as np
-
+import matplotlib.pyplot as plt
 
 class MicroRobotEnv:
-    def __init__(self):
+    def __init__(self, render = True):
+
+        self.render_enabled = render
+        self.trajectory = []  
+        if render:
+            plt.ion() # 开启交互模式
+            self.fig, self.ax = plt.subplots(figsize=(7, 7))
+            self.fig.patch.set_facecolor('#f0f0f0') # 浅灰色背景
+           
         # --- simulation ---
         self.dt = 0.02  # seconds (50 Hz integration)
         self.state = np.zeros(2, dtype=float)  # [x, y] in meters
@@ -49,9 +57,9 @@ class MicroRobotEnv:
         # Magnetic dipole moment magnitude (A·m^2).
         # N52 r = 0.75, h = 2mm
         self.m_mag = 4.08 * 1e-3  # A·m^2 (placeholder; tune/identify from experiments)
-
+        self.m_mag_coff = 0.1
         # --- fluid + geometry (SI units) ---
-        self.eta = 0.34        # Pa·s (water at room temp)
+        self.eta = 0.34        # Pa·s (350cst silcone oil at room temp)
         self.n_turns = 2       # number of helix turns, n
         self.R_helix = 1 * 1e-3    # helix radius (meters)  (paper uses n0 or similar)
         self.theta = np.deg2rad(60.9)  # pitch angle θ (radians)
@@ -74,6 +82,10 @@ class MicroRobotEnv:
     def step(self, action):
         v_vec, info = self.robot_kinematics(action)
         self.state = self.state + v_vec * self.dt
+        self.trajectory.append(self.state.copy()) # 记录轨迹
+        
+        if self.render_enabled:
+            self.render(action)
         return self.state.copy(), info
 
     def robot_kinematics(self, action):
@@ -118,7 +130,7 @@ class MicroRobotEnv:
         omega_cmd = 2.0 * np.pi * f_hz  # rad/s
 
         # --- step-out limit: τ_required = gamma * omega, τ_max ≈ m * B0 ---
-        tau_max = self.m_mag * self.B0  # N·m (A·m^2 * T = N·m)
+        tau_max = self.m_mag * self.B0 * self.m_mag_coff  # N·m (A·m^2 * T = N·m)
         # Guard against non-physical gamma
         if gamma <= 0:
             # If gamma becomes non-positive due to bad parameters, fall back to no step-out limit
@@ -188,37 +200,49 @@ class MicroRobotEnv:
         c = 2.0 * np.pi * self.n_turns * (self.R_helix ** 3) * parameter_c
 
         return a, b, c, xi_perp, xi_para
-
-    def render(self):
-        # Minimal placeholder; integrate with matplotlib if needed
-        print(f"state(x,y) = {self.state}")
-
-
-import matplotlib.pyplot as plt
-
-def test_run():
-    env = MicroRobotEnv()
-    traj = []
     
-    # 模拟一个圆周运动：改变方向，保持频率
-    f_test = 5.0  
-    for t in range(200):
-        angle = 0.05 * t
-        action = [np.cos(angle), np.sin(angle), f_test]
-        state, info = env.step(action)
-        traj.append(state.copy())
-    
-    traj = np.array(traj)
-    
-    # 绘图
-    plt.figure(figsize=(8, 6))
-    plt.plot(traj[:, 0] * 1000, traj[:, 1] * 1000, 'b-o', label='Trajectory')
-    plt.xlabel('X (mm)')
-    plt.ylabel('Y (mm)')
-    plt.title(f'Microrobot Simulation (f={f_test}Hz, Step-out={info["f_step"]:.1f}Hz)')
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+
+    def render(self, action=None):
+        self.ax.clear()
+        
+        # 1. 绘制环境：网格线模拟实验室载玻片
+        self.ax.set_facecolor('white')
+        self.ax.grid(True, which='both', color='#e0e0e0', linestyle='-')
+        
+        # 2. 绘制轨迹 (淡蓝色尾迹)
+        if len(self.trajectory) > 2:
+            traj_pts = np.array(self.trajectory)
+            self.ax.plot(traj_pts[:, 0], traj_pts[:, 1], color='cyan', alpha=0.5, lw=1, zorder=1)
+
+        # 3. 绘制机器人形态
+        x, y = self.state
+        # 提取方向 (从 action 中获取或根据速度方向)
+        if action is not None and np.linalg.norm(action[:2]) > 0:
+            dx, dy = action[0], action[1]
+            norm = np.sqrt(dx**2 + dy**2)
+            dx, dy = dx/norm * 0.003, dy/norm * 0.003 # 长度用于绘制
+            
+            # 绘制螺旋尾部 (一条线段)
+            self.ax.plot([x, x+dx], [y, y+dy], color='#555555', lw=3, solid_capstyle='round', zorder=2)
+            # 绘制头部 (球体)
+            head = plt.Circle((x, y), self.d_head/2, color='#2c3e50', zorder=3)
+            self.ax.add_artist(head)
+        
+        # 4. 设置范围和标签 (单位改为 mm)
+        limit = 0.03 
+        self.ax.set_xlim(x - limit, x + limit)
+        self.ax.set_ylim(y - limit, y + limit)
+        
+        # 5. 添加比例尺 (例如 5mm)
+        scale_len = 0.005 
+        self.ax.plot([x+limit*0.5, x+limit*0.5+scale_len], [y-limit*0.8, y-limit*0.8], color='black', lw=2)
+        self.ax.text(x+limit*0.5, y-limit*0.9, '5 mm', fontsize=9)
+
+        self.ax.set_aspect('equal')
+        self.ax.set_title("Experimental View: Helical Microrobot", fontsize=10)
+        plt.pause(0.001)    
+
+
 
 if __name__ == "__main__":
-    test_run()
+    pass
