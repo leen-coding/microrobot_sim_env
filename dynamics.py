@@ -1,6 +1,7 @@
 # dynamics.py
 import numpy as np
 from dataclasses import dataclass
+from typing import Callable, Optional, Dict
 from utils import _normalize
 
 @dataclass
@@ -22,6 +23,11 @@ class MicroRobotParams:
     # optional drift / noise
     drift: np.ndarray = None
     process_noise_std: float = 0.0
+    # optional external force callback: fn(state: np.ndarray, **kwargs) -> array_like or dict
+    external_force_callback: Optional[Callable] = None
+    external_force_kwargs: Optional[Dict] = None
+    # robot mass in kg (default: 0.043 g)
+    mass_kg: float = 0.043e-3
 
 class MicroRobotDynamics:
     """
@@ -87,6 +93,29 @@ class MicroRobotDynamics:
         v_scalar = beta * omega_eff
         v_vec = v_scalar * k_hat + self.p.drift
 
+        # external force (from magnetic field gradient noise)
+        F_noise = None
+        v_noise = np.zeros(3, dtype=float)
+        a_noise = np.zeros(3, dtype=float)
+        cb = getattr(self.p, "external_force_callback", None)
+        if cb is not None:
+            try:
+                res = cb(state, **(self.p.external_force_kwargs or {}))
+                if isinstance(res, dict) and "F_mean" in res:
+                    F_noise = np.asarray(res["F_mean"], dtype=float)
+                else:
+                    F_noise = np.asarray(res, dtype=float)
+                # convert force -> acceleration using mass, then integrate to velocity: dv = a * dt
+                mass = float(self.p.mass_kg) if getattr(self.p, "mass_kg", None) is not None else 1e-12
+                if mass <= 1e-12:
+                    mass = 1e-12
+                a_noise = F_noise / mass
+                v_noise = a_noise * dt
+                v_vec = v_vec + v_noise
+            except Exception:
+                # swallow exceptions from callback to avoid breaking dynamics
+                F_noise = None
+
 
         # process noise (optional)
         if self.p.process_noise_std > 0:
@@ -102,6 +131,9 @@ class MicroRobotDynamics:
             "gamma": float(gamma),
             "tau_max": float(tau_max),
             "sync": bool(sync),
+            "F_noise": (None if F_noise is None else F_noise.tolist()),
+            "a_noise": a_noise.tolist(),
+            "v_noise": v_noise.tolist(),
         }
         return v_vec, info
 
