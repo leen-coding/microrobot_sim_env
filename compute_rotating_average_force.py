@@ -13,6 +13,8 @@
 import numpy as np
 import pandas as pd
 from numpy.linalg import norm
+from functools import lru_cache
+from typing import Callable, Tuple
 
 
 PARQUET_45DEG = "actuation_matrices_45deg.parquet"
@@ -275,6 +277,52 @@ def compute_average_force_rotating_dipole(df: pd.DataFrame, x: float, y: float, 
             "theta": 45.0
         }
     }
+
+
+def make_cached_force_callback(df: pd.DataFrame, grid_resolution: float = 1e-4) -> Callable:
+    """
+    返回一个回调函数 `cb(state, **kwargs)`，它会把位置按 `grid_resolution` 四舍五入并使用 LRU 缓存
+    来避免重复计算旋转平均力。
+
+    用法示例：
+      cb = make_cached_force_callback(df, grid_resolution=1e-4)
+      res = cb(state, axis_hat=(0,0,1), B0=0.01, magnetic_moment=1e-6)
+
+    注意：该回调会接受与 `compute_average_force_rotating_dipole` 相同的关键字参数，
+    但 `df` 会闭包在工厂函数内部，因此不用每次传入。
+    """
+
+    def quantize_coord(v: float) -> float:
+        return round(v / grid_resolution) * grid_resolution
+
+    @lru_cache(maxsize=4096)
+    def _compute_cached(xq: float, yq: float, zq: float,
+                        axis_hat: Tuple[float, float, float],
+                        B0: float, magnetic_moment: float, n_phase: int, h: float):
+        # call the main function with quantized coords
+        return compute_average_force_rotating_dipole(df, xq, yq, zq,
+                                                    axis_hat=axis_hat,
+                                                    B0=B0,
+                                                    magnetic_moment=magnetic_moment,
+                                                    n_phase=n_phase,
+                                                    h=h)
+
+    def cb(state, **kwargs):
+        x, y, z = float(state[0]), float(state[1]), float(state[2])
+        xq, yq, zq = quantize_coord(x), quantize_coord(y), quantize_coord(z)
+
+        # extract kwargs with defaults matching compute_average_force_rotating_dipole
+        axis_hat = kwargs.get('axis_hat', (0,0,1))
+        B0 = kwargs.get('B0', 0.01)
+        magnetic_moment = kwargs.get('magnetic_moment', 1e-6)
+        n_phase = int(kwargs.get('n_phase', 36))
+        h = float(kwargs.get('h', 1e-3))
+
+        return _compute_cached(xq, yq, zq, tuple(axis_hat), float(B0), float(magnetic_moment), n_phase, h)
+
+    # expose cache_clear for user control
+    cb.cache_clear = _compute_cached.cache_clear  # type: ignore
+    return cb
 
 
 # ====== 用法示例 ======
