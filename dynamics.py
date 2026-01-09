@@ -29,6 +29,15 @@ class MicroRobotParams:
     # robot mass in kg (default: 0.043 g)
     mass_kg: float = 0.043e-3
 
+    # gravity / buoyancy (SI units)
+    # default volume = 13.378 mm^3 -> 13.378e-9 m^3
+    volume_m3: float = 13.378e-9
+    # fluid density: 0.97 g/cm^3 -> 970 kg/m^3
+    fluid_density_kg_m3: float = 970.0
+    gravity: float = 9.80665
+    # enable gravity+buoyancy
+    apply_gravity: bool = True
+
 class MicroRobotDynamics:
     """
     Pure dynamics: state update only. No rendering, no external dependencies.
@@ -80,6 +89,11 @@ class MicroRobotDynamics:
         omega_cmd = 2.0 * np.pi * f_hz
         tau_max = self.p.m_mag * self.B0 * self.p.m_mag_coff
 
+        # mass (used for external forces and buoyancy)
+        mass = float(self.p.mass_kg) if getattr(self.p, "mass_kg", None) is not None else 1e-12
+        if mass <= 1e-12:
+            mass = 1e-12
+
         if gamma <= 0:
             omega_eff = omega_cmd
             f_step = np.inf
@@ -92,6 +106,17 @@ class MicroRobotDynamics:
 
         v_scalar = beta * omega_eff
         v_vec = v_scalar * k_hat + self.p.drift
+
+        # gravity + buoyancy (integrate acceleration -> dv = a * dt)
+        a_gravity = -self.p.gravity if getattr(self.p, "apply_gravity", False) else 0.0
+        a_buoyancy = 0.0
+        a_gb = 0.0
+        if getattr(self.p, "apply_gravity", False):
+            # buoyant acceleration = (rho_fluid * V * g) / mass
+            a_buoyancy = (self.p.fluid_density_kg_m3 * self.p.volume_m3 * self.p.gravity) / mass
+            # net acceleration in z = -g + a_buoyancy
+            a_gb = -self.p.gravity + a_buoyancy
+            v_vec = v_vec + np.array([0.0, 0.0, a_gb * dt], dtype=float)
 
         # external force (from magnetic field gradient noise)
         F_noise = None
@@ -117,9 +142,9 @@ class MicroRobotDynamics:
                 F_noise = None
 
 
-        # process noise (optional)
+        # process noise (optional) - scale with sqrt(dt)
         if self.p.process_noise_std > 0:
-            v_vec = v_vec + np.random.randn(3) * (self.p.process_noise_std / np.sqrt(dt))
+            v_vec = v_vec + np.random.randn(3) * (self.p.process_noise_std * np.sqrt(dt))
 
         info = {
             "k_hat": k_hat.copy(),
@@ -134,6 +159,10 @@ class MicroRobotDynamics:
             "F_noise": (None if F_noise is None else F_noise.tolist()),
             "a_noise": a_noise.tolist(),
             "v_noise": v_noise.tolist(),
+            # gravity/buoyancy diagnostics
+            "a_gravity": float(a_gravity),
+            "a_buoyancy": float(a_buoyancy),
+            "a_gb": float(a_gb),
         }
         return v_vec, info
 

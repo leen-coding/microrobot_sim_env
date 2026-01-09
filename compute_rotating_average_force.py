@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from numpy.linalg import norm
 from functools import lru_cache
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Optional, Dict
 
 
 PARQUET_45DEG = "actuation_matrices_45deg.parquet"
@@ -36,6 +36,123 @@ def find_nearest_row(df_t: pd.DataFrame, x: float, y: float, z: float) -> pd.Ser
     d2 = (df_t["x"]-x)**2 + (df_t["y"]-y)**2 + (df_t["z"]-z)**2
     idx = d2.idxmin()
     return df_t.loc[idx]
+
+
+class PrecomputedField:
+    """
+    Precompute numeric arrays + nearest-neighbor index for faster queries.
+    Provides cached spatial derivatives of A via central diff or local fit.
+    """
+    def __init__(self, df: pd.DataFrame, theta: float = 45.0, grid_resolution: Optional[float] = None):
+        df_t = df[df["theta"] == float(theta)].copy()
+        if df_t.empty:
+            raise ValueError(f"No data for theta={theta} in database")
+
+        self.coords = df_t[["x", "y", "z"]].to_numpy(dtype=float)
+        a_cols = ["A11","A12","A13","A21","A22","A23","A31","A32","A33"]
+        self.A = df_t[a_cols].to_numpy(dtype=float).reshape(-1, 3, 3)
+        self.theta = float(theta)
+
+        if grid_resolution is None:
+            grid_resolution = self._infer_grid_resolution()
+        self.grid_resolution = float(grid_resolution)
+
+        self.index_map = self._build_index_map()
+        self.deriv_cache: Dict[Tuple[int, float], Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        self.kdtree = self._build_kdtree()
+
+    def _infer_grid_resolution(self) -> float:
+        res = []
+        for axis in range(3):
+            vals = np.unique(self.coords[:, axis])
+            if len(vals) < 2:
+                continue
+            diffs = np.diff(vals)
+            diffs = diffs[diffs > 0]
+            if len(diffs) > 0:
+                res.append(float(np.min(diffs)))
+        if not res:
+            return 1.0
+        return float(min(res))
+
+    def _quantize(self, v: float) -> float:
+        return round(v / self.grid_resolution) * self.grid_resolution
+
+    def _build_index_map(self) -> Dict[Tuple[float, float, float], int]:
+        idx_map: Dict[Tuple[float, float, float], int] = {}
+        for i, (x, y, z) in enumerate(self.coords):
+            key = (self._quantize(x), self._quantize(y), self._quantize(z))
+            idx_map[key] = i
+        return idx_map
+
+    def _build_kdtree(self):
+        try:
+            from scipy.spatial import cKDTree  # type: ignore
+        except Exception:
+            return None
+        return cKDTree(self.coords)
+
+    def nearest_index(self, x: float, y: float, z: float) -> int:
+        if self.kdtree is not None:
+            _, idx = self.kdtree.query([x, y, z], k=1)
+            return int(idx)
+        target = np.array([x, y, z], dtype=float)
+        d2 = np.sum((self.coords - target) ** 2, axis=1)
+        return int(np.argmin(d2))
+
+    def _neighbor_index(self, x: float, y: float, z: float) -> Optional[int]:
+        key = (self._quantize(x), self._quantize(y), self._quantize(z))
+        return self.index_map.get(key, None)
+
+    def _local_fit_gradients(self, idx: int, k: int = 27) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        center = self.coords[idx]
+        if self.kdtree is not None:
+            _, inds = self.kdtree.query(center, k=min(k, len(self.coords)))
+            inds = np.atleast_1d(inds)
+        else:
+            d2 = np.sum((self.coords - center) ** 2, axis=1)
+            kk = min(k, len(self.coords))
+            inds = np.argpartition(d2, kk - 1)[:kk]
+
+        neigh = self.coords[inds]
+        dx = neigh[:, 0] - center[0]
+        dy = neigh[:, 1] - center[1]
+        dz = neigh[:, 2] - center[2]
+        X = np.stack([np.ones(len(neigh)), dx, dy, dz], axis=1)
+        Y = self.A[inds].reshape(len(neigh), 9)
+        beta, *_ = np.linalg.lstsq(X, Y, rcond=None)
+        dA_dx = beta[1].reshape(3, 3)
+        dA_dy = beta[2].reshape(3, 3)
+        dA_dz = beta[3].reshape(3, 3)
+        return dA_dx, dA_dy, dA_dz
+
+    def get_dA(self, idx: int, h: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        key = (int(idx), float(h))
+        cached = self.deriv_cache.get(key)
+        if cached is not None:
+            return cached
+
+        x0, y0, z0 = self.coords[idx]
+        x_p = self._neighbor_index(x0 + h, y0, z0)
+        x_m = self._neighbor_index(x0 - h, y0, z0)
+        y_p = self._neighbor_index(x0, y0 + h, z0)
+        y_m = self._neighbor_index(x0, y0 - h, z0)
+        z_p = self._neighbor_index(x0, y0, z0 + h)
+        z_m = self._neighbor_index(x0, y0, z0 - h)
+
+        if None not in (x_p, x_m, y_p, y_m, z_p, z_m):
+            dA_dx = (self.A[x_p] - self.A[x_m]) / (2.0 * h)
+            dA_dy = (self.A[y_p] - self.A[y_m]) / (2.0 * h)
+            dA_dz = (self.A[z_p] - self.A[z_m]) / (2.0 * h)
+        else:
+            dA_dx, dA_dy, dA_dz = self._local_fit_gradients(idx)
+
+        self.deriv_cache[key] = (dA_dx, dA_dy, dA_dz)
+        return dA_dx, dA_dy, dA_dz
+
+
+def build_precomputed_field(df: pd.DataFrame, theta: float = 45.0, grid_resolution: Optional[float] = None) -> PrecomputedField:
+    return PrecomputedField(df, theta=theta, grid_resolution=grid_resolution)
 
 
 def get_A_at_45deg(df: pd.DataFrame, x: float, y: float, z: float):
@@ -183,7 +300,36 @@ def compute_grad_absB(df: pd.DataFrame, x: float, y: float, z: float,
     }
 
 
-def compute_average_force_rotating_dipole(df: pd.DataFrame, x: float, y: float, z: float,
+def compute_grad_absB_fast(precomp: PrecomputedField, x: float, y: float, z: float,
+                           u_hat=(1,0,0), B0=0.01, Imax=None, h=1e-3):
+    """
+    Fast version using PrecomputedField.
+    """
+    idx = precomp.nearest_index(x, y, z)
+    A = precomp.A[idx]
+    x0, y0, z0 = precomp.coords[idx]
+
+    i_star, B, err = solve_currents_for_direction(A, u_hat, B0=B0, Imax=Imax)
+    Bmag = float(norm(B))
+    if Bmag < 1e-12:
+        raise RuntimeError("|B| too small at this point")
+
+    dA_dx, dA_dy, dA_dz = precomp.get_dA(idx, h)
+    dB_dx = dA_dx @ i_star
+    dB_dy = dA_dy @ i_star
+    dB_dz = dA_dz @ i_star
+    J = np.column_stack([dB_dx, dB_dy, dB_dz])
+    grad_absB = (J.T @ B) / Bmag
+
+    return {
+        "x_used": float(x0), "y_used": float(y0), "z_used": float(z0),
+        "i_star": i_star, "B": B, "Bmag": Bmag, "err": err,
+        "grad_absB": grad_absB,
+        "J": J
+    }
+
+
+def compute_average_force_rotating_dipole(df_or_precomp, x: float, y: float, z: float,
                                           axis_hat=(0,0,1), B0=0.01, magnetic_moment=1e-6,
                                           n_phase=36, h=1e-3):
     """
@@ -233,7 +379,10 @@ def compute_average_force_rotating_dipole(df: pd.DataFrame, x: float, y: float, 
         u_hat = np.cos(phi)*e1 + np.sin(phi)*e2
 
         # 计算该相位的梯度和电流
-        res = compute_grad_absB(df, x, y, z, u_hat=u_hat, B0=B0, h=h)
+        if isinstance(df_or_precomp, PrecomputedField):
+            res = compute_grad_absB_fast(df_or_precomp, x, y, z, u_hat=u_hat, B0=B0, h=h)
+        else:
+            res = compute_grad_absB(df_or_precomp, x, y, z, u_hat=u_hat, B0=B0, h=h)
         grad_absB = res["grad_absB"]
 
         # 力 = 磁矩大小 × 梯度
@@ -279,17 +428,17 @@ def compute_average_force_rotating_dipole(df: pd.DataFrame, x: float, y: float, 
     }
 
 
-def make_cached_force_callback(df: pd.DataFrame, grid_resolution: float = 1e-4) -> Callable:
+def make_cached_force_callback(df_or_precomp, grid_resolution: float = 1e-4) -> Callable:
     """
     返回一个回调函数 `cb(state, **kwargs)`，它会把位置按 `grid_resolution` 四舍五入并使用 LRU 缓存
     来避免重复计算旋转平均力。
 
     用法示例：
-      cb = make_cached_force_callback(df, grid_resolution=1e-4)
+      cb = make_cached_force_callback(df_or_precomp, grid_resolution=1e-4)
       res = cb(state, axis_hat=(0,0,1), B0=0.01, magnetic_moment=1e-6)
 
     注意：该回调会接受与 `compute_average_force_rotating_dipole` 相同的关键字参数，
-    但 `df` 会闭包在工厂函数内部，因此不用每次传入。
+    但 `df_or_precomp` 会闭包在工厂函数内部，因此不用每次传入。
     """
 
     def quantize_coord(v: float) -> float:
@@ -300,7 +449,7 @@ def make_cached_force_callback(df: pd.DataFrame, grid_resolution: float = 1e-4) 
                         axis_hat: Tuple[float, float, float],
                         B0: float, magnetic_moment: float, n_phase: int, h: float):
         # call the main function with quantized coords
-        return compute_average_force_rotating_dipole(df, xq, yq, zq,
+        return compute_average_force_rotating_dipole(df_or_precomp, xq, yq, zq,
                                                     axis_hat=axis_hat,
                                                     B0=B0,
                                                     magnetic_moment=magnetic_moment,

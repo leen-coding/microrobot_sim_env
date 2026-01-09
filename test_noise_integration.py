@@ -36,7 +36,7 @@ def main():
     )
 
     dyn = MicroRobotDynamics(params)
-    state = np.array([0.0, 0.0, -0.19])
+    state = np.array([0.0, 0.0, -0.22])
     action = np.array([0.0, 0.0, 1.0, 10.0])
 
     next_state, info = dyn.step(state, action, dt=0.01)

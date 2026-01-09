@@ -24,10 +24,12 @@ class BulletRenderer:
         gravity=(0,0,0),
         use_inertia_from_file=True,
         ignore_collision=True,
+        use_physics=False,
     ):
         self.body_axis = np.array(body_axis, dtype=float)
         self.r_LI = np.array(r_LI, dtype=float)
         self.use_gui = use_gui
+        self.use_physics = bool(use_physics)
 
         cid = p.connect(p.GUI if use_gui else p.DIRECT)
         p.resetSimulation()
@@ -45,13 +47,18 @@ class BulletRenderer:
         if ignore_collision:
             flags |= p.URDF_IGNORE_COLLISION_SHAPES
 
+        # if using physics, load as dynamic body (useFixedBase=False)
+        use_fixed = not self.use_physics
         self.robot_id = p.loadURDF(
             urdf_path,
             basePosition=[0,0,0],
             baseOrientation=[0,0,0,1],
-            useFixedBase=True,
+            useFixedBase=use_fixed,
             flags=flags
         )
+
+        # keep track whether we have initialized the dynamic body's pose
+        self._initialized = False
 
         if use_gui:
             p.resetDebugVisualizerCamera(
@@ -74,8 +81,33 @@ class BulletRenderer:
         R = np.array(p.getMatrixFromQuaternion(q.tolist()), dtype=float).reshape(3,3)
         pos_com = np.array(state_xyz, dtype=float) + R @ self.r_LI
 
-        p.resetBasePositionAndOrientation(self.robot_id, pos_com.tolist(), q.tolist())
-        p.stepSimulation()
+        if self.use_physics:
+            # for physics mode we do not teleport the body position every frame;
+            # we may set orientation once at init and then let physics evolve.
+            if not self._initialized:
+                p.resetBasePositionAndOrientation(self.robot_id, pos_com.tolist(), q.tolist())
+                self._initialized = True
+            # always step the simulation here
+            p.stepSimulation()
+        else:
+            p.resetBasePositionAndOrientation(self.robot_id, pos_com.tolist(), q.tolist())
+            p.stepSimulation()
+
+    def apply_velocity(self, lin_vel, ang_vel=None):
+        """Set base linear (and optional angular) velocity for dynamic body.
+
+        lin_vel: array-like (3,)
+        ang_vel: array-like (3,) or None
+        """
+        if not self.use_physics:
+            return
+        lv = list(map(float, lin_vel))
+        av = None if ang_vel is None else list(map(float, ang_vel))
+        p.resetBaseVelocity(self.robot_id, linearVelocity=lv, angularVelocity=av or [0,0,0])
+
+    def get_base_position(self):
+        pos, orn = p.getBasePositionAndOrientation(self.robot_id)
+        return np.array(pos, dtype=float), np.array(orn, dtype=float)
 
     def close(self):
         if p.isConnected():
