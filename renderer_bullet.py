@@ -3,7 +3,7 @@ import numpy as np
 import pybullet as p
 import pybullet_data
 from pathlib import Path
-from utils import quat_mul, quat_from_axis_angle, quat_from_two_vectors, _normalize
+from math_utils import quat_mul, quat_from_axis_angle, quat_from_two_vectors, _normalize
 
 class BulletRenderer:
     """

@@ -2,13 +2,12 @@ import time
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pybullet as p
 
 from env import MicroRobotEnv
 from renderer_bullet import BulletRenderer
 from dynamics import MicroRobotParams
-from compute_rotating_average_force import build_precomputed_field, make_cached_force_callback
+from external_force_model import build_force_model_from_params
 
 
 def _normalize(v, eps=1e-12):
@@ -30,43 +29,11 @@ def main():
         gravity=(0, 0, 0),
     )
 
-    parquet_path = base_dir / "actuation_matrices_45deg.parquet"
-    cb = None
-    if parquet_path.exists():
-        df = pd.read_parquet(parquet_path)
-        precomp = build_precomputed_field(df, theta=45.0)
-        cb = make_cached_force_callback(precomp, grid_resolution=1e-4)
-
     params = MicroRobotParams()
-    if cb is not None:
-        grid_th = 1e-4
+    parquet_path = base_dir / "actuation_matrices_45deg.parquet"
+    if parquet_path.exists():
+        params.ext.force_fn = build_force_model_from_params(params, parquet_path)
 
-        def make_throttled(cb_fn, grid_th):
-            state_last = {"key": None, "res": None}
-
-            def throttled(state, **kwargs):
-                key = (
-                    round(state[0] / grid_th),
-                    round(state[1] / grid_th),
-                    round(state[2] / grid_th),
-                )
-                if key == state_last["key"] and state_last["res"] is not None:
-                    return state_last["res"]
-                res = cb_fn(state, **kwargs)
-                state_last["key"] = key
-                state_last["res"] = res
-                return res
-
-            return throttled
-
-        params.external_force_callback = make_throttled(cb, grid_th)
-        params.external_force_kwargs = {
-            "axis_hat": (0, 0, 1),
-            "B0": 0.01,
-            "magnetic_moment": 1e-6,
-            "n_phase": 18,
-            "h": 1e-3,
-        }
 
     env = MicroRobotEnv(dt=0.02, renderer=renderer, params=params)
     env.reset()
@@ -117,11 +84,14 @@ def main():
             if kn < 1e-12:
                 k_hat = np.array([0.0, 0.0, 1.0], dtype=float)
 
-            if params.external_force_kwargs is not None:
-                params.external_force_kwargs["axis_hat"] = k_hat.tolist()
-
             action = [k_hat[0], k_hat[1], k_hat[2], f_hz]
-            env.step(action)
+            state, info = env.step(action)
+            if renderer is not None:
+                renderer.update(
+                    state_xyz=state,
+                    k_hat=info.get("k_hat", [0, 0, 1]),
+                    phi_spin=env.phi_spin,
+                )
             time.sleep(1.0 / 60.0)
     finally:
         env.close()

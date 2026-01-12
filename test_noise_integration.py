@@ -1,39 +1,20 @@
 import numpy as np
-import pandas as pd
-
-from compute_rotating_average_force import compute_average_force_rotating_dipole
 from dynamics import MicroRobotParams, MicroRobotDynamics
-
-
-from compute_rotating_average_force import compute_average_force_rotating_dipole, make_cached_force_callback
-
-
-def mag_noise_cb(state, df, axis_hat=(0,0,1), B0=0.01, magnetic_moment=1e-6, n_phase=12, use_cache=True):
-    if use_cache:
-        # create a cached callback and call it (factory caches internally)
-        cached = make_cached_force_callback(df, grid_resolution=1e-4)
-        return cached(state, axis_hat=axis_hat, B0=B0, magnetic_moment=magnetic_moment, n_phase=n_phase)
-
-    x, y, z = float(state[0]), float(state[1]), float(state[2])
-    return compute_average_force_rotating_dipole(df, x, y, z,
-                                                axis_hat=axis_hat,
-                                                B0=B0,
-                                                magnetic_moment=magnetic_moment,
-                                                n_phase=n_phase)
+from external_force_model import build_force_model_from_params
 
 
 def main():
+    params = MicroRobotParams()
     try:
-        df = pd.read_parquet("actuation_matrices_45deg.parquet")
+        params.ext.force_fn = build_force_model_from_params(
+            params,
+            "actuation_matrices_45deg.parquet",
+            n_phase=12,
+            h=1e-3,
+        )
     except Exception as e:
         print("Failed to load parquet:", e)
         return
-
-    params = MicroRobotParams(
-        external_force_callback=mag_noise_cb,
-        external_force_kwargs={'df': df, 'axis_hat': (0, 0, 1), 'B0': 0.01, 'magnetic_moment': 1e-6, 'n_phase': 12},
-        mass_kg=0.043e-3
-    )
 
     dyn = MicroRobotDynamics(params)
     state = np.array([0.0, 0.0, -0.22])
