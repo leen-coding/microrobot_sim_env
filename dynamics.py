@@ -107,6 +107,7 @@ class MicroRobotDynamics:
         info = {
             "k_hat": k_hat.copy(),
             "v_scalar": float(v_scalar),
+            "v_vec": v_vec.copy().tolist(),
             "omega_cmd": float(2.0 * np.pi * f_hz),
             "omega_eff": float(omega_eff),
             "f_step": float(f_step) if np.isfinite(f_step) else f_step,

@@ -11,8 +11,7 @@ class MicroRobotEnv:
         dt=0.02,
         params=None,
         renderer=None,
-        ground_z: float = 0.0,
-        init_z_raise: float = 5e-3,
+        ground_z: float = 0,
         clamp_to_ground: bool = True,
         episode_randomization=None,
         rng=None,
@@ -32,7 +31,6 @@ class MicroRobotEnv:
 
         self.renderer = renderer
         self.ground_z = float(ground_z)
-        self.init_z_raise = float(init_z_raise)
         self.clamp_to_ground = bool(clamp_to_ground)
 
         self.state = np.zeros(3, dtype=float)
@@ -55,14 +53,10 @@ class MicroRobotEnv:
 
         # init state
         if state0 is None:
-            z0 = 0
+            z0 = self.ground_z
             self.state[:] = (0.0, 0.0, z0)
         else:
             s = np.array(state0, dtype=float).reshape(-1)
-            if s.size < 3:
-                s = np.array([s[0], s[1] if s.size > 1 else 0.0, 0], dtype=float)
-            s = s[:3]
-            s[2] = max(s[2], 0)
             self.state[:] = s
 
         self.phi_spin = 0.0

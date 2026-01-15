@@ -1,5 +1,5 @@
 from env import MicroRobotEnv
-from renderer_bullet import BulletRenderer
+
 from pathlib import Path
 import numpy as np
 import time
@@ -7,7 +7,7 @@ from dynamics import MicroRobotParams
 from external_force_model import build_force_model_from_params
 base_dir = Path(__file__).resolve().parent
 urdf_path = base_dir / "robot_model" / "robot.urdf"
-
+from renderer_bullet import BulletRenderer
 renderer = BulletRenderer(
     urdf_path=urdf_path,
     body_axis=np.array([1,0,0]),                 # 你已确认螺旋轴为 STL 的 x
@@ -38,6 +38,7 @@ for t in range(2000):
         )
     # print(info.get("F_ext"))
     # print(state)
+    # print(info.get("v_vec"))
     time.sleep(1/60)
 
 env.close()

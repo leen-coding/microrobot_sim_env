@@ -8,7 +8,9 @@ def snapshot_params(params) -> Dict[str, Any]:
     """Stable params snapshot for episode metadata."""
     p = params
     return {
-        "mag": {"B0_mT": float(p.mag.B0_mT), "m_mag": float(p.mag.m_mag), "m_scale": float(p.mag.m_scale)},
+        "mag": {"B0_mT": float(p.mag.B0_mT), 
+        "m_mag": float(p.mag.m_mag), 
+        "m_scale": float(p.mag.m_scale)},
         "helix": {
             "n_turns": float(p.helix.n_turns),
             "R_helix": float(p.helix.R_helix),
@@ -55,7 +57,7 @@ class TrajectoryRecorder:
         if randomization is not None:
             meta["randomization"] = dict(randomization)
         if extra_meta:
-            meta.update(extra_meta)
+            meta.update(extra_meta) #字典合并
 
         self.episode_meta = meta
 
@@ -86,6 +88,12 @@ class TrajectoryRecorder:
         return metrics
 
     def compute_episode_metrics(self, *, target_xyz=None, dt: Optional[float] = None) -> Dict[str, Any]:
+        '''
+        在 Python 函数参数列表中的这个单独的 *，被称为**强制关键字参数（Keyword-Only Arguments）**分割符。
+
+        它的意思是：* 后面的所有参数，在调用函数时必须显式地写出参数名，不能只传数值。
+        '''
+
         if not self.trajectory:
             return {
                 "avg_speed": None,
